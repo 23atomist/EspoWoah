@@ -96,6 +96,24 @@ return [
 ];
 ```
 
+### Service tokens (headless clients)
+
+A Cloudflare Access **service token** asserts `common_name` and carries no
+`email`, so it needs an explicit mapping to an EspoCRM user:
+
+```php
+'mcp' => ['cloudflareAccess' => [
+    'serviceTokens' => [
+        '<client-id>.access' => 'mcp@yourdomain.com',
+    ],
+]],
+```
+
+The mapped address must still satisfy `emailDomains` / `allowedEmails`, so a
+mapping cannot widen access beyond the allow-list. Point it at a dedicated,
+role-scoped user rather than a human admin — the assistant then has its own
+identity in the audit trail and its own ceiling on what it can reach.
+
 How it works:
 
 1. A request hits `POST /api/v1/mcp` through your Cloudflare tunnel.

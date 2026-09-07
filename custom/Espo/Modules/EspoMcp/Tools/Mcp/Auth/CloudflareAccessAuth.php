@@ -166,6 +166,14 @@ class CloudflareAccessAuth
         $email = $payload['email'] ?? null;
 
         if (!is_string($email) || $email === '') {
+            // Cloudflare Access service tokens assert `common_name` and carry
+            // no email - they identify a machine, not a person. Map a known
+            // token to an EspoCRM user so headless clients act as a real,
+            // scoped identity instead of impersonating a human.
+            $email = $this->resolveServiceTokenEmail($payload);
+        }
+
+        if (!is_string($email) || $email === '') {
             throw new RuntimeException("No email claim in token.");
         }
 
@@ -173,7 +181,41 @@ class CloudflareAccessAuth
             throw new RuntimeException("Email '$email' is not allowed.");
         }
 
+        // Downstream resolves the user from this claim; a service token has
+        // none of its own, so the mapped address is written back here.
+        $payload['email'] = $email;
+
         return $payload;
+    }
+
+    /**
+     * Map a Cloudflare Access service token to an EspoCRM user's email.
+     *
+     * Configured as mcp.cloudflareAccess.serviceTokens:
+     *   [ '<common_name>' => 'mcp@example.com' ]
+     *
+     * The mapped address must still satisfy the email allow-list, so a stray
+     * mapping cannot widen access beyond what emailDomains permits.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function resolveServiceTokenEmail(array $payload): ?string
+    {
+        $commonName = $payload['common_name'] ?? null;
+
+        if (!is_string($commonName) || $commonName === '') {
+            return null;
+        }
+
+        $map = $this->config->get('mcp.cloudflareAccess.serviceTokens');
+
+        if (!is_array($map)) {
+            return null;
+        }
+
+        $email = $map[$commonName] ?? null;
+
+        return is_string($email) && $email !== '' ? $email : null;
     }
 
     /**
@@ -214,18 +256,41 @@ class CloudflareAccessAuth
 
         $keyEntry = null;
 
-        $keys = $cache;
+        // Cloudflare's certs endpoint returns BOTH representations:
+        //   "keys"         - JWKS entries (kid, kty, alg, use, n, e)
+        //   "public_certs" - PEM certificates (kid, cert)
+        // Only the latter carry a certificate. Matching against "keys" alone
+        // finds an entry with neither `cert` nor `x5c`, which then fails as
+        // "no usable certificate" - looking like a key mismatch when it is
+        // really the wrong half of the response.
+        $candidates = [];
 
-        if (isset($cache['keys'])) {
-            $keys = $cache['keys'];
+        if (isset($cache['public_certs']) && is_array($cache['public_certs'])) {
+            $candidates = $cache['public_certs'];
         }
 
-        foreach ((array) $keys as $candidate) {
-            if (($candidate['kid'] ?? null) === $kid) {
+        if (isset($cache['keys']) && is_array($cache['keys'])) {
+            $candidates = array_merge($candidates, $cache['keys']);
+        }
+
+        if ($candidates === []) {
+            $candidates = (array) $cache;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (!is_array($candidate) || ($candidate['kid'] ?? null) !== $kid) {
+                continue;
+            }
+
+            // Prefer an entry that actually carries a certificate; keep any
+            // kid match as a fallback so the failure message stays accurate.
+            if (isset($candidate['cert']) || isset($candidate['x5c'])) {
                 $keyEntry = $candidate;
 
                 break;
             }
+
+            $keyEntry ??= $candidate;
         }
 
         if (!$keyEntry) {
