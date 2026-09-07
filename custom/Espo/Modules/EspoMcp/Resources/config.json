@@ -1,0 +1,21 @@
+{
+    "mcp": {
+        "cloudflareAccess": {
+            "enabled": false,
+            "teamName": "",
+            "applicationAud": "",
+            "emailDomain": "",
+            "emailDomains": [],
+            "allowedEmails": [],
+            "certsUrl": "https://<your-team>.cloudflareaccess.com/cdn-cgi/access/certs",
+            "disableEspoAuthFallback": false
+        },
+        "security": {
+            "maxWhereDepth": 5,
+            "maxBodySize": 5242880,
+            "defaultMaxSize": 50,
+            "maxMaxSize": 200,
+            "requireAssignedUser": false
+        }
+    }
+}

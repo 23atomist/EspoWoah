@@ -1,0 +1,14 @@
+[
+    {
+        "route": "/mcp",
+        "method": "post",
+        "noAuth": true,
+        "actionClassName": "Espo\\Modules\\EspoMcp\\Api\\PostMcp"
+    },
+    {
+        "route": "/mcp",
+        "method": "get",
+        "noAuth": true,
+        "actionClassName": "Espo\\Modules\\EspoMcp\\Api\\GetMcp"
+    }
+]
