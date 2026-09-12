@@ -24,6 +24,7 @@ use Espo\Core\Select\SearchParams;
 use Espo\Core\Utils\Metadata;
 use Espo\Core\Utils\Config;
 use Espo\Entities\User;
+use Espo\Modules\EspoMcp\Tools\Mcp\Security\EntityAccessPolicy;
 use Espo\ORM\EntityManager;
 use stdClass;
 
@@ -72,6 +73,21 @@ class RecordExecutor
         $value = $this->config->get('mcp.security.maxMaxSize');
 
         return is_int($value) && $value > 0 ? $value : self::MAX_MAX_SIZE;
+    }
+
+    private ?EntityAccessPolicy $accessPolicy = null;
+
+    private function accessPolicy(): EntityAccessPolicy
+    {
+        if ($this->accessPolicy === null) {
+            $security = $this->config->get('mcp.security');
+
+            $this->accessPolicy = EntityAccessPolicy::fromConfig(
+                is_array($security) ? $security : null
+            );
+        }
+
+        return $this->accessPolicy;
     }
 
     /**
@@ -211,7 +227,7 @@ class RecordExecutor
 
     public function create(string $entityType, stdClass $data): stdClass
     {
-        $service = $this->getServiceForUser($entityType);
+        $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
         $result = $service->create($data);
 
@@ -220,7 +236,7 @@ class RecordExecutor
 
     public function update(string $entityType, string $id, stdClass $data): stdClass
     {
-        $service = $this->getServiceForUser($entityType);
+        $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
         $result = $service->update($id, $data);
 
@@ -229,7 +245,7 @@ class RecordExecutor
 
     public function delete(string $entityType, string $id): void
     {
-        $service = $this->getServiceForUser($entityType);
+        $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
         $service->delete($id);
     }
@@ -327,14 +343,14 @@ class RecordExecutor
 
     public function link(string $entityType, string $id, string $link, string $foreignId): void
     {
-        $service = $this->getServiceForUser($entityType);
+        $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
         $service->link($id, $link, $foreignId);
     }
 
     public function unlink(string $entityType, string $id, string $link, string $foreignId): void
     {
-        $service = $this->getServiceForUser($entityType);
+        $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
         $service->unlink($id, $link, $foreignId);
     }
@@ -347,7 +363,19 @@ class RecordExecutor
             throw new BadRequest("Missing 'leadId'.");
         }
 
-        $this->checkEntityType('Lead');
+        $this->checkEntityType('Lead', EntityAccessPolicy::OPERATION_WRITE);
+
+        $conversionTargets = [
+            'Contact' => 'createContact',
+            'Account' => 'createAccount',
+            'Opportunity' => 'createOpportunity',
+        ];
+
+        foreach ($conversionTargets as $targetType => $flag) {
+            if ($args->{$flag} ?? false) {
+                $this->checkEntityType($targetType, EntityAccessPolicy::OPERATION_WRITE);
+            }
+        }
 
         $leadService = $this->recordServiceContainer->get('Lead');
         $lead = $leadService->getEntity($leadId);
@@ -466,7 +494,7 @@ class RecordExecutor
 
     public function addStreamNote(string $entityType, string $id, string $post, bool $isInternal = false): stdClass
     {
-        $this->checkEntityType($entityType);
+        $this->checkEntityType($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
         $note = $this->entityManager->getNewEntity('Note');
 
@@ -582,8 +610,16 @@ class RecordExecutor
         }
     }
 
-    private function checkEntityType(string $entityType): void
-    {
+    private function checkEntityType(
+        string $entityType,
+        string $operation = EntityAccessPolicy::OPERATION_READ
+    ): void {
+        $reason = $this->accessPolicy()->denialReason($entityType, $operation);
+
+        if ($reason !== null) {
+            throw new Forbidden($reason);
+        }
+
         $isEntity = (bool) $this->metadata->get(['scopes', $entityType, 'entity']);
         $isObject = (bool) $this->metadata->get(['scopes', $entityType, 'object']);
 
@@ -596,9 +632,11 @@ class RecordExecutor
         }
     }
 
-    private function getServiceForUser(string $entityType): RecordService
-    {
-        $this->checkEntityType($entityType);
+    private function getServiceForUser(
+        string $entityType,
+        string $operation = EntityAccessPolicy::OPERATION_READ
+    ): RecordService {
+        $this->checkEntityType($entityType, $operation);
 
         return $this->recordServiceFactory->createForUser($entityType, $this->user);
     }
