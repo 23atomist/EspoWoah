@@ -14,11 +14,13 @@ namespace Espo\Modules\EspoMcp\Tools\Mcp;
 class ToolRegistry
 {
     /**
+     * @param bool $includeSetupTools Setup tools are admin-only. Authorisation
+     *        is enforced in SetupService, not by this flag.
      * @return array<int, array<string, mixed>>
      */
-    public function getAll(): array
+    public function getAll(bool $includeSetupTools = false): array
     {
-        return [
+        $tools = [
             $this->definition(
                 name: 'mcp_whoami',
                 description: 'Get the currently authenticated EspoCRM user (id, name, username, teams, ' .
@@ -269,6 +271,94 @@ class ToolRegistry
                         ],
                     ],
                     'required' => ['entityType', 'id', 'post'],
+                    'additionalProperties' => false,
+                ]
+            ),
+        ];
+
+        if ($includeSetupTools) {
+            $tools = [...$tools, ...$this->setupTools()];
+        }
+
+        return $tools;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function setupTools(): array
+    {
+        $presetSchema = (object) [
+            'type' => 'string',
+            'enum' => ['readonly-analyst', 'sales-assistant', 'support-agent', 'full-operator'],
+            'description' => 'Access profile to base the role on.',
+        ];
+
+        $recordLevelSchema = (object) [
+            'type' => 'string',
+            'enum' => ['own', 'team', 'all'],
+            'description' => 'How far record visibility reaches: only assigned records (own), ' .
+                'the user\'s teams (team), or everything (all).',
+        ];
+
+        $overridesSchema = (object) [
+            'type' => 'object',
+            'description' => 'Per-entity overrides. Values: none, read, readwrite, full. ' .
+                'Example: {"Document": "none", "Task": "readwrite"}.',
+        ];
+
+        return [
+            $this->definition(
+                name: 'mcp_setup_status',
+                description: 'Check whether this EspoCRM needs MCP first-run setup. Returns whether ' .
+                    'a scoped MCP service user already exists, the available access presets and ' .
+                    'record levels, and which entity types are always denied. Admin only. ' .
+                    'Call this first.',
+                inputSchema: (object) [
+                    'type' => 'object',
+                    'properties' => (object) [],
+                    'additionalProperties' => false,
+                ]
+            ),
+            $this->definition(
+                name: 'mcp_setup_preview',
+                description: 'Dry run: return the exact entity-by-permission matrix that would be ' .
+                    'created for a given preset, WITHOUT writing anything. Always call this and ' .
+                    'show the result to the user for approval before calling mcp_setup_provision.',
+                inputSchema: (object) [
+                    'type' => 'object',
+                    'properties' => (object) [
+                        'preset' => $presetSchema,
+                        'recordLevel' => $recordLevelSchema,
+                        'overrides' => $overridesSchema,
+                    ],
+                    'required' => ['preset', 'recordLevel'],
+                    'additionalProperties' => false,
+                ]
+            ),
+            $this->definition(
+                name: 'mcp_setup_provision',
+                description: 'Create the scoped EspoCRM role and API user, and return the API key ' .
+                    'ONCE. Requires confirm: true, and requires that the user has seen and approved ' .
+                    'the mcp_setup_preview output. The returned key cannot be retrieved again.',
+                inputSchema: (object) [
+                    'type' => 'object',
+                    'properties' => (object) [
+                        'preset' => $presetSchema,
+                        'recordLevel' => $recordLevelSchema,
+                        'overrides' => $overridesSchema,
+                        'confirm' => (object) [
+                            'type' => 'boolean',
+                            'description' => 'Must be true. Set it only after the user has ' .
+                                'approved the preview output.',
+                        ],
+                        'replaceExisting' => (object) [
+                            'type' => 'boolean',
+                            'description' => 'Re-provision an existing MCP service user with new ' .
+                                'permissions. Defaults to false.',
+                        ],
+                    ],
+                    'required' => ['preset', 'recordLevel', 'confirm'],
                     'additionalProperties' => false,
                 ]
             ),

@@ -21,6 +21,7 @@ use Espo\Core\Utils\Log;
 use Espo\Core\Utils\Config;
 use Espo\Entities\User;
 use Espo\Modules\EspoMcp\Tools\Mcp\Auth\CloudflareAccessAuth;
+use Espo\Modules\EspoMcp\Tools\Mcp\Setup\SetupService;
 use Espo\ORM\EntityManager;
 use stdClass;
 use Throwable;
@@ -125,6 +126,7 @@ class McpService
     {
         $user = $this->resolveUser();
         $identitySource = $this->identitySource();
+        $setupRequired = $this->createSetupService()->isSetupRequired($user);
 
         $userPayload = [
             'id' => $user->getId(),
@@ -138,12 +140,21 @@ class McpService
             'protocolVersion' => self::PROTOCOL_VERSION,
             'capabilities' => (object) [
                 'tools' => (object) ['listChanged' => false],
+                'resources' => (object) ['listChanged' => false, 'subscribe' => false],
+                'prompts' => (object) ['listChanged' => false],
             ],
             'serverInfo' => (object) [
                 'name' => self::SERVER_NAME,
                 'version' => self::SERVER_VERSION,
                 'identitySource' => $identitySource,
                 'user' => (object) $userPayload,
+                'setup' => (object) [
+                    'required' => $setupRequired,
+                    'reason' => $setupRequired
+                        ? 'admin session, no MCP service user provisioned'
+                        : null,
+                    'nextTool' => $setupRequired ? 'mcp_setup_status' : null,
+                ],
             ],
         ];
 
@@ -160,7 +171,7 @@ class McpService
         $registry = $this->injectableFactory->create(ToolRegistry::class);
 
         return $this->jsonRpcResult($id, (object) [
-            'tools' => $registry->getAll(),
+            'tools' => $registry->getAll($this->setupToolsVisible()),
         ]);
     }
 
@@ -301,6 +312,22 @@ class McpService
                 $this->argString($args, 'post'),
                 (bool) ($args->isInternal ?? false)
             ),
+            'mcp_setup_status' => $this->createSetupService()
+                ->status($this->resolveUser()),
+            'mcp_setup_preview' => $this->createSetupService()->preview(
+                $this->resolveUser(),
+                $this->argString($args, 'preset'),
+                $this->argString($args, 'recordLevel'),
+                $this->argOverrides($args)
+            ),
+            'mcp_setup_provision' => $this->createSetupService()->provision(
+                $this->resolveUser(),
+                $this->argString($args, 'preset'),
+                $this->argString($args, 'recordLevel'),
+                $this->argOverrides($args),
+                ($args->confirm ?? false) === true,
+                ($args->replaceExisting ?? false) === true
+            ),
             default => throw new BadRequest("Unknown tool '$name'."),
         };
     }
@@ -326,6 +353,24 @@ class McpService
         return $this->injectableFactory->createWith(RecordExecutor::class, [
             'user' => $user,
         ]);
+    }
+
+    private function createSetupService(): SetupService
+    {
+        return $this->injectableFactory->create(SetupService::class);
+    }
+
+    /**
+     * Setup tools are listed only for admin sessions. This controls
+     * visibility only — authorisation is enforced in SetupService.
+     */
+    private function setupToolsVisible(): bool
+    {
+        if (!$this->resolveUser()->isAdmin()) {
+            return false;
+        }
+
+        return $this->createSetupService()->isEnabled();
     }
 
     /**
@@ -433,6 +478,34 @@ class McpService
         }
 
         return $value;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function argOverrides(stdClass $args): array
+    {
+        $value = $args->overrides ?? null;
+
+        if ($value === null) {
+            return [];
+        }
+
+        if (!($value instanceof stdClass)) {
+            throw new BadRequest("Argument 'overrides' must be an object.");
+        }
+
+        $result = [];
+
+        foreach (get_object_vars($value) as $entityType => $shape) {
+            if (!is_string($shape)) {
+                throw new BadRequest("Override for '$entityType' must be a string.");
+            }
+
+            $result[$entityType] = $shape;
+        }
+
+        return $result;
     }
 
     private function optString(stdClass $args, string $name): ?string
