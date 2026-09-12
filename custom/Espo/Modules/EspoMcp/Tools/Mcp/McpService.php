@@ -21,6 +21,7 @@ use Espo\Core\Utils\Log;
 use Espo\Core\Utils\Config;
 use Espo\Entities\User;
 use Espo\Modules\EspoMcp\Tools\Mcp\Auth\CloudflareAccessAuth;
+use Espo\Modules\EspoMcp\Tools\Mcp\Resources\ResourceRegistry;
 use Espo\Modules\EspoMcp\Tools\Mcp\Setup\SetupService;
 use Espo\ORM\EntityManager;
 use stdClass;
@@ -117,6 +118,7 @@ class McpService
             'tools/list' => $this->handleToolsList($id),
             'tools/call' => $this->handleToolsCall($id, $params),
             'resources/list' => $this->handleResourcesList($id),
+            'resources/read' => $this->handleResourcesRead($id, $params),
             'prompts/list' => $this->handlePromptsList($id),
             default => $this->jsonRpcError($id, -32601, "Method '$method' not found."),
         };
@@ -233,7 +235,34 @@ class McpService
 
     private function handleResourcesList(mixed $id): Response
     {
-        return $this->jsonRpcResult($id, (object) ['resources' => []]);
+        return $this->jsonRpcResult($id, (object) [
+            'resources' => (new ResourceRegistry())->list(),
+        ]);
+    }
+
+    private function handleResourcesRead(mixed $id, ?stdClass $params): Response
+    {
+        $uri = $params->uri ?? null;
+
+        if (!is_string($uri) || $uri === '') {
+            return $this->jsonRpcError($id, -32602, "Missing 'uri'.");
+        }
+
+        $content = (new ResourceRegistry())->read($uri);
+
+        if ($content === null) {
+            return $this->jsonRpcError($id, -32602, "Unknown resource '$uri'.");
+        }
+
+        return $this->jsonRpcResult($id, (object) [
+            'contents' => [
+                (object) [
+                    'uri' => $uri,
+                    'mimeType' => 'text/markdown',
+                    'text' => $content,
+                ],
+            ],
+        ]);
     }
 
     private function handlePromptsList(mixed $id): Response
