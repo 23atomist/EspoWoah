@@ -113,4 +113,27 @@ class AccessPresetTest extends TestCase
         $this->assertTrue(AccessPreset::isValidShape('readwrite'));
         $this->assertFalse(AccessPreset::isValidShape('rw'));
     }
+
+    public function testAssignmentPermissionPerPreset(): void
+    {
+        $this->assertSame('no', AccessPreset::permissions('readonly-analyst')['assignmentPermission'], 'readonly-analyst');
+        $this->assertSame('team', AccessPreset::permissions('sales-assistant')['assignmentPermission'], 'sales-assistant');
+        $this->assertSame('team', AccessPreset::permissions('support-agent')['assignmentPermission'], 'support-agent');
+        $this->assertSame('all', AccessPreset::permissions('full-operator')['assignmentPermission'], 'full-operator');
+    }
+
+    public function testUnknownPresetShapeFailsClosed(): void
+    {
+        $this->assertSame(
+            AccessPreset::SHAPE_NONE,
+            AccessPreset::shapeFor('god-mode', 'Account', [])
+        );
+    }
+
+    public function testPermissionsForUnknownPresetIsEmpty(): void
+    {
+        // Callers must validate with exists() before calling permissions().
+        // An empty map would leave a role at EspoCRM defaults rather than the restrictive values.
+        $this->assertSame([], AccessPreset::permissions('god-mode'));
+    }
 }
