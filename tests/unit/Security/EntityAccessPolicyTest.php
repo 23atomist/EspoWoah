@@ -84,4 +84,28 @@ class EntityAccessPolicyTest extends TestCase
         // Fail closed: an unrecognised operation must get the stricter treatment.
         $this->assertTrue($this->policy()->isDenied('User', 'something-else'));
     }
+
+    public function testGettersReturnDefaultsPlusOperatorAdditions(): void
+    {
+        $policy = $this->policy([
+            'deniedEntityTypes' => ['Invoice'],
+            'deniedWriteEntityTypes' => ['Ledger'],
+        ]);
+
+        $denied = $policy->deniedEntityTypes();
+        $deniedWrite = $policy->deniedWriteEntityTypes();
+
+        $this->assertContains('AuthToken', $denied);
+        $this->assertContains('Invoice', $denied);
+        $this->assertContains('User', $deniedWrite);
+        $this->assertContains('Ledger', $deniedWrite);
+    }
+
+    public function testConfigCanExtendWriteDenyList(): void
+    {
+        $policy = $this->policy(['deniedWriteEntityTypes' => ['Invoice']]);
+
+        $this->assertTrue($policy->isDenied('Invoice', EntityAccessPolicy::OPERATION_WRITE));
+        $this->assertFalse($policy->isDenied('Invoice', EntityAccessPolicy::OPERATION_READ));
+    }
 }
