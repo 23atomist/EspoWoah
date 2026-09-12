@@ -2,3 +2,7 @@ data/cache/
 .DS_Store
 .claude/
 .superpowers/
+vendor/
+.phpunit.cache/
+*.zip
+build/
