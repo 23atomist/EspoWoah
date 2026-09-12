@@ -11,10 +11,13 @@ namespace Espo\Modules\EspoMcp\Tools\Mcp\Setup;
 use Espo\Core\Exceptions\BadRequest;
 use Espo\Core\Exceptions\Forbidden;
 use Espo\Core\Utils\Config;
+use Espo\Core\Utils\Log;
 use Espo\Core\Utils\Metadata;
+use Espo\Entities\Role;
 use Espo\Entities\User;
 use Espo\Modules\EspoMcp\Tools\Mcp\Security\EntityAccessPolicy;
 use Espo\ORM\EntityManager;
+use Espo\Tools\UserSecurity\ApiService;
 use stdClass;
 
 /**
@@ -33,6 +36,8 @@ class SetupService
         protected EntityManager $entityManager,
         protected Metadata $metadata,
         protected Config $config,
+        protected ApiService $apiService,
+        protected Log $log,
     ) {}
 
     /**
@@ -206,5 +211,121 @@ class SetupService
                 );
             }
         }
+    }
+
+    /**
+     * Create the Role and the API user, then return the key once.
+     *
+     * @param array<string, string> $overrides
+     * @throws BadRequest
+     * @throws Forbidden
+     */
+    public function provision(
+        User $actor,
+        string $preset,
+        string $recordLevel,
+        array $overrides,
+        bool $confirm,
+        bool $replaceExisting,
+    ): stdClass {
+        $this->assertAdmin($actor);
+        $this->validateArguments($preset, $recordLevel, $overrides);
+
+        if ($confirm !== true) {
+            throw new BadRequest(
+                "Refusing to provision without confirm: true. " .
+                "Call mcp_setup_preview first and show the permissions to the user."
+            );
+        }
+
+        $existing = $this->findServiceUser();
+
+        if ($existing !== null && !$replaceExisting) {
+            throw new BadRequest(
+                "An MCP service user already exists (userName: " . self::SERVICE_USER_NAME . "). " .
+                "Pass replaceExisting: true to re-provision it with new permissions, " .
+                "or revoke it in Administration → Users."
+            );
+        }
+
+        $roleData = $this->buildRoleData($preset, $recordLevel, $overrides);
+
+        $role = $this->entityManager->getNewEntity(Role::ENTITY_TYPE);
+
+        $role->set('name', $this->roleName($preset));
+        $role->set('data', (object) $roleData);
+        $role->set('fieldData', (object) []);
+
+        foreach (AccessPreset::permissions($preset) as $field => $value) {
+            $role->set($field, $value);
+        }
+
+        $this->entityManager->saveEntity($role);
+
+        $user = $existing ?? $this->entityManager->getNewEntity(User::ENTITY_TYPE);
+
+        $user->set('userName', self::SERVICE_USER_NAME);
+        $user->set('lastName', 'MCP Assistant');
+        $user->set('type', User::TYPE_API);
+        $user->set('authMethod', 'ApiKey');
+        $user->set('isActive', true);
+        $user->set('rolesIds', [$role->getId()]);
+
+        $this->entityManager->saveEntity($user);
+
+        // apiKey is readOnly in entityDefs; this service is the only path
+        // that can mint one. It re-checks admin internally — a second gate.
+        $provisioned = $this->apiService->generateNewApiKey($user->getId());
+
+        $apiKey = $provisioned->get('apiKey');
+
+        if (!is_string($apiKey) || $apiKey === '') {
+            throw new Forbidden("MCP: failed to generate an API key for the service user.");
+        }
+
+        $this->log->info(
+            'MCP setup: provisioned service user {userName} with preset {preset} ({level}) by {actor}.',
+            [
+                'userName' => self::SERVICE_USER_NAME,
+                'preset' => $preset,
+                'level' => $recordLevel,
+                'actor' => $actor->get('userName'),
+                'roleId' => $role->getId(),
+                'userId' => $user->getId(),
+                'replaced' => $existing !== null,
+            ]
+        );
+
+        $siteUrl = rtrim((string) $this->config->get('siteUrl'), '/');
+
+        return (object) [
+            'provisioned' => true,
+            'replacedExisting' => $existing !== null,
+            'preset' => $preset,
+            'recordLevel' => $recordLevel,
+            'roleId' => $role->getId(),
+            'roleName' => $this->roleName($preset),
+            'userId' => $user->getId(),
+            'userName' => self::SERVICE_USER_NAME,
+            'apiKey' => $apiKey,
+            'apiKeyIsOneTime' => true,
+            'warning' =>
+                'This API key is shown once and cannot be retrieved again. ' .
+                'Store it in your MCP client config now. ' .
+                'To revoke it, deactivate or delete the user "' . self::SERVICE_USER_NAME . '" ' .
+                'in Administration → Users. To change its permissions, edit the role "' .
+                $this->roleName($preset) . '" in Administration → Roles.',
+            'clientConfig' => (object) [
+                'mcpServers' => (object) [
+                    'espocrm' => (object) [
+                        'type' => 'http',
+                        'url' => $siteUrl . '/api/v1/mcp',
+                        'headers' => (object) [
+                            'X-Api-Key' => $apiKey,
+                        ],
+                    ],
+                ],
+            ],
+        ];
     }
 }
