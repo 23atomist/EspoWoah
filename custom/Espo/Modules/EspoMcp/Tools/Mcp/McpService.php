@@ -21,6 +21,7 @@ use Espo\Core\Utils\Log;
 use Espo\Core\Utils\Config;
 use Espo\Entities\User;
 use Espo\Modules\EspoMcp\Tools\Mcp\Auth\CloudflareAccessAuth;
+use Espo\Modules\EspoMcp\Tools\Mcp\Prompts\PromptRegistry;
 use Espo\Modules\EspoMcp\Tools\Mcp\Resources\ResourceRegistry;
 use Espo\Modules\EspoMcp\Tools\Mcp\Setup\SetupService;
 use Espo\ORM\EntityManager;
@@ -120,6 +121,7 @@ class McpService
             'resources/list' => $this->handleResourcesList($id),
             'resources/read' => $this->handleResourcesRead($id, $params),
             'prompts/list' => $this->handlePromptsList($id),
+            'prompts/get' => $this->handlePromptsGet($id, $params),
             default => $this->jsonRpcError($id, -32601, "Method '$method' not found."),
         };
     }
@@ -267,7 +269,36 @@ class McpService
 
     private function handlePromptsList(mixed $id): Response
     {
-        return $this->jsonRpcResult($id, (object) ['prompts' => []]);
+        return $this->jsonRpcResult($id, (object) [
+            'prompts' => (new PromptRegistry())->list(),
+        ]);
+    }
+
+    private function handlePromptsGet(mixed $id, ?stdClass $params): Response
+    {
+        $name = $params->name ?? null;
+
+        if (!is_string($name) || $name === '') {
+            return $this->jsonRpcError($id, -32602, "Missing prompt 'name'.");
+        }
+
+        $arguments = [];
+
+        if (($params->arguments ?? null) instanceof stdClass) {
+            foreach (get_object_vars($params->arguments) as $key => $value) {
+                if (is_string($value)) {
+                    $arguments[$key] = $value;
+                }
+            }
+        }
+
+        $prompt = (new PromptRegistry())->get($name, $arguments);
+
+        if ($prompt === null) {
+            return $this->jsonRpcError($id, -32602, "Unknown prompt '$name'.");
+        }
+
+        return $this->jsonRpcResult($id, (object) $prompt);
     }
 
     private function executeTool(string $name, stdClass $args): mixed
