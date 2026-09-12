@@ -83,7 +83,7 @@ class RecordExecutor
             $security = $this->config->get('mcp.security');
 
             $this->accessPolicy = EntityAccessPolicy::fromConfig(
-                is_array($security) ? $security : null
+                is_array($security) || is_object($security) ? $security : null
             );
         }
 

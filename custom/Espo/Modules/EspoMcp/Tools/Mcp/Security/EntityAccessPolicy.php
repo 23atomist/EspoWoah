@@ -73,10 +73,20 @@ final class EntityAccessPolicy
      * Config is additive only — the shipped defaults are always unioned in,
      * so a short or empty operator list can never re-enable a denied type.
      *
-     * @param ?array<string, mixed> $config
+     * `Espo\Core\Utils\Config::get()` may hand back a subtree as either an
+     * array or a `stdClass`, depending on how it was stored. Both shapes are
+     * normalised to an array here, at the single boundary every caller
+     * funnels through, so a config subtree that happens to arrive as an
+     * object is never silently dropped.
+     *
+     * @param array<string, mixed>|object|null $config
      */
-    public static function fromConfig(?array $config): self
+    public static function fromConfig(array|object|null $config): self
     {
+        if (is_object($config)) {
+            $config = (array) $config;
+        }
+
         $extraDenied = self::stringList($config['deniedEntityTypes'] ?? null);
         $extraDeniedWrite = self::stringList($config['deniedWriteEntityTypes'] ?? null);
 

@@ -7,7 +7,7 @@ use PHPUnit\Framework\TestCase;
 
 class EntityAccessPolicyTest extends TestCase
 {
-    private function policy(?array $config = null): EntityAccessPolicy
+    private function policy(array|object|null $config = null): EntityAccessPolicy
     {
         return EntityAccessPolicy::fromConfig($config);
     }
@@ -107,5 +107,25 @@ class EntityAccessPolicyTest extends TestCase
 
         $this->assertTrue($policy->isDenied('Invoice', EntityAccessPolicy::OPERATION_WRITE));
         $this->assertFalse($policy->isDenied('Invoice', EntityAccessPolicy::OPERATION_READ));
+    }
+
+    public function testConfigCanExtendDenyListWhenSuppliedAsObject(): void
+    {
+        // Espo\Core\Utils\Config::get() can hand back a config subtree as a
+        // stdClass rather than an array. An operator addition supplied that
+        // way must still be honoured, not silently dropped.
+        $policy = $this->policy((object) ['deniedEntityTypes' => ['Invoice']]);
+
+        $this->assertTrue($policy->isDenied('Invoice', EntityAccessPolicy::OPERATION_READ));
+    }
+
+    public function testDefaultsStillApplyWhenConfigIsAnObject(): void
+    {
+        // Additive-only must hold on the object path too: an object-shaped
+        // config must not be able to shrink the deny list below defaults.
+        $policy = $this->policy((object) ['deniedEntityTypes' => ['Invoice']]);
+
+        $this->assertTrue($policy->isDenied('AuthToken', EntityAccessPolicy::OPERATION_READ));
+        $this->assertTrue($policy->isDenied('User', EntityAccessPolicy::OPERATION_WRITE));
     }
 }
