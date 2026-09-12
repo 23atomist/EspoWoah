@@ -48,6 +48,21 @@ class RoleDataBuilderTest extends TestCase
                 'object' => true,
                 'aclActionLevelListMap' => ['edit' => ['own', 'no']],
             ],
+            // edit's level list is PRESENT but EMPTY — must mean "no level
+            // is permitted for edit", clamping to 'no', never falling
+            // through to the unrestricted default.
+            'EmptyEditLevels' => [
+                'entity' => true,
+                'object' => true,
+                'aclActionLevelListMap' => ['edit' => []],
+            ],
+            // aclActionList is PRESENT but EMPTY — must mean "no action is
+            // permitted at all", collapsing the whole scope to `false`.
+            'EmptyActionList' => [
+                'entity' => true,
+                'object' => true,
+                'aclActionList' => [],
+            ],
         ];
     }
 
@@ -187,5 +202,133 @@ class RoleDataBuilderTest extends TestCase
                 }
             }
         }
+    }
+
+    public function testEmptyActionLevelListIsNothingPermittedNotEverything(): void
+    {
+        // aclActionLevelListMap['edit'] => [] is the natural way to encode
+        // "no level is permitted for edit". It must clamp to 'no' — it must
+        // NOT fall through to the unrestricted default and grant 'all'
+        // just because the requested preset/level is maximally permissive.
+        $data = $this->builder()->build('full-operator', 'all', [], $this->scopes());
+
+        $this->assertSame('no', $data['EmptyEditLevels']['edit']);
+    }
+
+    public function testEmptyAclActionListDisablesScope(): void
+    {
+        // aclActionList => [] means no action is permitted at all. The
+        // scope must collapse to `false` — the same encoding used for any
+        // other disabled scope — not an empty action map.
+        $data = $this->builder()->build('full-operator', 'all', [], $this->scopes());
+
+        $this->assertFalse($data['EmptyActionList']);
+    }
+
+    public function testUnknownPresetDropsOverridesAndDisablesEverything(): void
+    {
+        // shapeFor() resolves overrides BEFORE it looks the preset up, so an
+        // override alone must not be able to grant access under a preset
+        // name that does not exist.
+        $data = $this->builder()->build(
+            'does-not-exist',
+            'all',
+            ['Account' => 'full'],
+            $this->scopes()
+        );
+
+        $this->assertFalse($data['Account']);
+    }
+
+    /**
+     * Property test for the invariant this class exists to guarantee:
+     * clamping never widens. For every non-'create' action actually
+     * emitted, its rank must never exceed the lesser of (a) the requested
+     * record level's rank and (b) the highest rank the scope itself
+     * declares as permitted (with an implicit floor of 'no', since clamp()
+     * always has 'no' available as a fallback even when the scope's
+     * declared list doesn't literally contain it).
+     *
+     * `testEveryPresetAndLevelProducesValidLevels` only checks membership
+     * in {no, own, team, all} — it would pass even if every level were
+     * hardcoded to 'all'. This test checks the actual bound.
+     */
+    public function testClampNeverExceedsRecordLevelOrScopeCeiling(): void
+    {
+        // Local rank map, independent of RoleDataBuilder::LEVEL_RANK.
+        $rank = ['no' => 0, 'own' => 1, 'team' => 2, 'all' => 3];
+
+        $presets = ['readonly-analyst', 'sales-assistant', 'support-agent', 'full-operator'];
+        $scopes = $this->scopes();
+
+        foreach ($presets as $preset) {
+            foreach (['own', 'team', 'all'] as $recordLevel) {
+                $data = $this->builder()->build($preset, $recordLevel, [], $scopes);
+
+                foreach ($data as $entityType => $actions) {
+                    if ($actions === false) {
+                        continue;
+                    }
+
+                    $defs = $scopes[$entityType];
+
+                    foreach ($actions as $action => $value) {
+                        if ($action === 'create') {
+                            continue;
+                        }
+
+                        // The floor is always 0 ('no'): clamp() can always
+                        // fall back to 'no' even when the scope's declared
+                        // level list doesn't literally include it.
+                        $scopeCeilingRank = 0;
+
+                        foreach ($this->declaredLevelsForTest($defs, $action) as $level) {
+                            if (!array_key_exists($level, $rank)) {
+                                continue;
+                            }
+
+                            $scopeCeilingRank = max($scopeCeilingRank, $rank[$level]);
+                        }
+
+                        $expectedCeiling = min($rank[$recordLevel], $scopeCeilingRank);
+
+                        $this->assertLessThanOrEqual(
+                            $expectedCeiling,
+                            $rank[$value],
+                            "$preset/$recordLevel/$entityType/$action produced '$value', " .
+                                "exceeding the allowed ceiling of rank $expectedCeiling"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Independent restatement — from the raw fixture metadata and the
+     * documented resolution order (per-action map first even if empty,
+     * then the scope-wide list even if empty, else the full default set)
+     * — of which levels a scope declares as permitted for an action. This
+     * is the published algorithm contract, not a reach into
+     * RoleDataBuilder's private methods.
+     *
+     * @param array<string, mixed> $defs
+     * @return string[]
+     */
+    private function declaredLevelsForTest(array $defs, string $action): array
+    {
+        $map = $defs['aclActionLevelListMap'] ?? null;
+
+        if (is_array($map) && array_key_exists($action, $map) && is_array($map[$action])) {
+            return $map[$action];
+        }
+
+        $list = $defs['aclLevelList'] ?? null;
+
+        if (is_array($list)) {
+            return $list;
+        }
+
+        return ['all', 'team', 'own', 'no'];
     }
 }

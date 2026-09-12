@@ -54,6 +54,14 @@ final class RoleDataBuilder
             $recordLevel = AccessPreset::LEVEL_OWN;
         }
 
+        // An unknown preset alone fails closed via shapeFor()'s null-definition
+        // branch, but shapeFor() resolves overrides BEFORE it looks the preset
+        // up. Drop overrides for an unknown preset so it cannot be used to grant
+        // access under a name that doesn't exist.
+        if (!AccessPreset::exists($preset)) {
+            $overrides = [];
+        }
+
         $data = [];
 
         foreach ($scopes as $entityType => $defs) {
@@ -81,7 +89,13 @@ final class RoleDataBuilder
 
             $writable = !$this->policy->isDenied($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
-            $data[$entityType] = $this->buildScope($defs, $shape, $recordLevel, $writable);
+            $built = $this->buildScope($defs, $shape, $recordLevel, $writable);
+
+            // A scope with no permitted actions IS a disabled scope: encode it
+            // as `false`, the same as any other disabled scope, rather than an
+            // empty action map (which would also json_encode as a JSON array,
+            // not the object shape EspoCRM's Role `data` expects).
+            $data[$entityType] = $built === [] ? false : $built;
         }
 
         return $data;
@@ -141,6 +155,10 @@ final class RoleDataBuilder
     }
 
     /**
+     * `aclActionList` present-but-empty means "no action is permitted" and
+     * must be honoured as such — only an ABSENT (or non-array) key falls
+     * through to the unrestricted default.
+     *
      * @param array<string, mixed> $defs
      * @return string[]
      */
@@ -148,7 +166,7 @@ final class RoleDataBuilder
     {
         $list = $defs['aclActionList'] ?? null;
 
-        if (!is_array($list) || $list === []) {
+        if (!is_array($list)) {
             return self::DEFAULT_ACTIONS;
         }
 
@@ -158,6 +176,12 @@ final class RoleDataBuilder
     /**
      * Per-action level list, then the scope-wide list, then the default.
      *
+     * A key that is PRESENT as an array is honoured even when it filters
+     * down to an empty list — that is the natural encoding of "no level is
+     * permitted for this action" and must clamp to 'no', not fall through
+     * to the unrestricted default. Only an ABSENT (or non-array) key falls
+     * through.
+     *
      * @param array<string, mixed> $defs
      * @return string[]
      */
@@ -165,18 +189,13 @@ final class RoleDataBuilder
     {
         $map = $defs['aclActionLevelListMap'] ?? null;
 
-        if (
-            is_array($map) &&
-            isset($map[$action]) &&
-            is_array($map[$action]) &&
-            $map[$action] !== []
-        ) {
+        if (is_array($map) && array_key_exists($action, $map) && is_array($map[$action])) {
             return array_values(array_filter($map[$action], static fn($item) => is_string($item)));
         }
 
         $list = $defs['aclLevelList'] ?? null;
 
-        if (is_array($list) && $list !== []) {
+        if (is_array($list)) {
             return array_values(array_filter($list, static fn($item) => is_string($item)));
         }
 
