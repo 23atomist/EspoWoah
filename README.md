@@ -6,7 +6,9 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server implemented a
 POST https://crm.yourdomain.com/api/v1/mcp
 ```
 
-No external process, no API keys, no god-mode credentials. Authentication uses the **same identity you use to sign into the CRM**, and every tool call runs with **your own ACL** (roles, teams, row-level security).
+No external process and no god-mode credentials. Authentication uses the **same identity you use to sign into the CRM**, and every tool call runs with **your own ACL** (roles, teams, row-level security).
+
+Installations without Cloudflare Access authenticate with an API key — but one the module provisions and scopes itself, bound to a dedicated service user and a role you approve before it is created, and revocable by deactivating that user. That is the default path for those installs, and it replaces the usual practice of pasting admin credentials into a client config file.
 
 Designed for deployments fronted by **Cloudflare Access with OIDC** (e.g. Stalwart) — the module verifies the Cloudflare Access JWT and maps your OIDC email to your EspoCRM user, so "signing into the CRM" *is* the MCP authentication.
 
@@ -29,7 +31,7 @@ EspoMcp solves both by living inside the CRM:
 
 ## Tools
 
-13 tools, generic over **all** entity types (including your custom entities) — a superset of what per-entity MCP servers offer, with dynamic schema discovery:
+14 tools, generic over **all** entity types (including your custom entities) — a superset of what per-entity MCP servers offer, with dynamic schema discovery:
 
 | Tool | Purpose |
 |---|---|
@@ -46,6 +48,17 @@ EspoMcp solves both by living inside the CRM:
 | `convert_lead` | Convert Lead → Contact / Account / Opportunity |
 | `get_stream` | Read a record's activity stream |
 | `post_to_stream` | Post a note to a record's stream |
+
+Plus three **setup** tools, offered only to an administrator session and only while
+first-run setup is still pending (no MCP service user exists yet). They are hidden from
+`tools/list` otherwise, and refused if called by name by a non-admin or when
+`mcp.setup.enabled` is `false`:
+
+| Tool | Purpose |
+|---|---|
+| `mcp_setup_status` | Whether setup is needed, the available presets and record levels, and which entity types are always denied |
+| `mcp_setup_preview` | Dry run: the exact entity-by-permission matrix that would be created. Writes nothing |
+| `mcp_setup_provision` | Create the scoped role and API user, and return the API key **once** |
 
 All record operations go through EspoCRM's own record services: validation, field filtering, duplicate detection, hooks, stream events and **ACL checks as the authenticated user** behave exactly as in the web UI.
 
@@ -91,6 +104,10 @@ return [
             'maxWhereDepth' => 5,
             'defaultMaxSize' => 50,
             'maxMaxSize' => 200,
+            // Both lists are additive to the shipped defaults: an entry here
+            // adds a denial, and can never re-enable one the module ships.
+            'deniedEntityTypes' => [],       // unreachable through MCP, in any operation
+            'deniedWriteEntityTypes' => [],  // readable through MCP, never writable
         ],
     ],
 ];
@@ -171,7 +188,7 @@ Two common options for personal mapping:
 
 ```
 initialize  →  { "serverInfo": { "name": "espocrm-mcp", "user": { "name": "Thomas" ... } } }
-tools/list  →  [13 tools]
+tools/list  →  [14 tools; 17 in an admin session while setup is pending]
 tools/call search_records {
   "entityType": "Opportunity",
   "where": [ { "type": "and", "value": [
@@ -184,9 +201,30 @@ tools/call search_records {
 
 The `where` grammar is EspoCRM's own — `equals`, `in`, `contains`, `between`, `after`, `linkedWith`, `arrayAnyOf`, and combinations via `and`/`or`/`not`. Nested groups are limited by `mcp.security.maxWhereDepth`.
 
+## Resources and prompts
+
+Beyond tools, the server implements the other two MCP surfaces.
+
+**Resources** (`resources/list`, `resources/read`) — three reference guides the client can
+pull in instead of the assistant guessing at EspoCRM's conventions:
+
+| Resource | Contents |
+|---|---|
+| EspoCRM search grammar | The `where` operators, nesting, and worked examples |
+| EspoCRM entity model conventions | `link` vs `linkMultiple`, the Id/Name attribute pairing, `assignedUser`/`teams` semantics |
+| EspoCRM ACL levels | What `all`/`team`/`own`/`no` mean, and how to read a `Forbidden` response |
+
+**Prompts** (`prompts/list`, `prompts/get`) — three ready workflows:
+
+| Prompt | Workflow |
+|---|---|
+| `pipeline-review` | Open pipeline by stage, deals that have gone quiet, what needs attention |
+| `lead-triage` | Summarise and rank new/unassigned leads, propose next actions |
+| `duplicate-sweep` | Find probable duplicates of an entity type and report them — proposes, never merges |
+
 ## Security notes
 
-- Every tool call executes with the resolved user's ACL — no admin bypass. If your role says read-only on Opportunities, MCP can't write Opportunities either.
+- Every tool call executes with the resolved user's ACL. If your role says read-only on Opportunities, MCP can't write Opportunities either. Be clear about what that does *not* cover: EspoCRM administrators bypass ACL by design, so in an admin-authenticated session ACL is not the control. What stops MCP writing the auth surface — `User`, `Team`, `Role`, `Portal`, `PortalRole` — is the entity deny-lists, not ACL, and **those deny-lists apply to administrators too**. Prefer a non-admin, role-scoped identity anyway: then ACL binds as well.
 - CF Access JWTs are fully verified: signature against CF's published certs (cached 1h), `aud`, `iss`, `exp`, `iat` skew, and email/domain allow-lists.
 - Where-filter grammar is allow-listed; nesting depth and page sizes are capped.
 - Unauthenticated requests are rejected — never executed as the system user.

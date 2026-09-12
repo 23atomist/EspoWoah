@@ -32,6 +32,25 @@ class SetupService
 {
     public const string SERVICE_USER_NAME = 'mcp-assistant';
 
+    /**
+     * Prefix of every Role this service creates. Used to recognise a role
+     * this module owns when a re-provision supersedes it.
+     */
+    public const string MANAGED_ROLE_PREFIX = 'MCP — ';
+
+    /** Appended to a managed role that a re-provision has replaced. */
+    public const string SUPERSEDED_SUFFIX = ' (superseded)';
+
+    /**
+     * `team` is a legitimate level, but the service user is created with no
+     * teams, so it grants nothing until an administrator assigns some. Said
+     * out loud rather than left for the operator to discover.
+     */
+    public const string TEAM_LEVEL_WARNING =
+        'recordLevel "team" was requested. The MCP service user is provisioned with no teams, ' .
+        'so team-level access resolves to no records until an administrator assigns teams to ' .
+        'the user "' . self::SERVICE_USER_NAME . '" in Administration → Users.';
+
     public function __construct(
         protected EntityManager $entityManager,
         protected Metadata $metadata,
@@ -53,6 +72,96 @@ class SetupService
     public function isEnabled(): bool
     {
         return $this->config->get('mcp.setup.enabled') !== false;
+    }
+
+    /**
+     * Every public entry point calls this, so `mcp.setup.enabled: false`
+     * actually disables the flow rather than only hiding the tools from
+     * `tools/list`. An assistant that calls `mcp_setup_provision` by name
+     * gets the same refusal.
+     *
+     * Always called after `assertAdmin()`, so a non-admin caller learns
+     * nothing about the configuration.
+     *
+     * @throws Forbidden
+     */
+    public function assertEnabled(): void
+    {
+        if ($this->isEnabled()) {
+            return;
+        }
+
+        throw new Forbidden(
+            "MCP setup is disabled (mcp.setup.enabled). " .
+            "An administrator must re-enable it in the EspoCRM config before a service " .
+            "user can be provisioned."
+        );
+    }
+
+    /**
+     * Whether a role name belongs to this module.
+     */
+    public static function isManagedRoleName(string $name): bool
+    {
+        return str_starts_with($name, self::MANAGED_ROLE_PREFIX);
+    }
+
+    /**
+     * Idempotent: a role already marked superseded keeps its name rather
+     * than collecting a second suffix on every re-provision.
+     */
+    public static function supersededRoleName(string $name): string
+    {
+        if (str_ends_with($name, self::SUPERSEDED_SUFFIX)) {
+            return $name;
+        }
+
+        return $name . self::SUPERSEDED_SUFFIX;
+    }
+
+    /**
+     * Warnings that describe the access actually granted, as opposed to the
+     * access the matrix appears to describe.
+     *
+     * @return string[]
+     */
+    public static function levelWarnings(string $recordLevel): array
+    {
+        if ($recordLevel === AccessPreset::LEVEL_TEAM) {
+            return [self::TEAM_LEVEL_WARNING];
+        }
+
+        return [];
+    }
+
+    /**
+     * The one-time-key warning. Names the role by id as well as by name,
+     * because earlier provisioning runs can leave superseded roles with a
+     * similar name, and calls out a reactivation rather than performing one
+     * silently.
+     */
+    public static function provisionWarning(
+        string $roleName,
+        string $roleId,
+        bool $reactivated
+    ): string {
+        $text =
+            'This API key is shown once and cannot be retrieved again. ' .
+            'Store it in your MCP client config now. ' .
+            'To revoke it, deactivate or delete the user "' . self::SERVICE_USER_NAME . '" ' .
+            'in Administration → Users. To change its permissions, edit the role "' .
+            $roleName . '" with id ' . $roleId . ' in Administration → Roles — identify it ' .
+            'by id, because an earlier run may have left a superseded role with a similar name.';
+
+        if (!$reactivated) {
+            return $text;
+        }
+
+        return
+            'The service user "' . self::SERVICE_USER_NAME . '" was deactivated, which means ' .
+            'its access had been revoked. This run has REACTIVATED that user and issued a new ' .
+            'API key, so the revocation no longer holds. If the deactivation was deliberate, ' .
+            'deactivate the user again now. ' . $text;
     }
 
     public function findServiceUser(): ?User
@@ -82,6 +191,7 @@ class SetupService
     public function status(User $actor): stdClass
     {
         $this->assertAdmin($actor);
+        $this->assertEnabled();
 
         $existing = $this->findServiceUser();
         $policy = $this->policy();
@@ -127,6 +237,7 @@ class SetupService
     public function preview(User $actor, string $preset, string $recordLevel, array $overrides): stdClass
     {
         $this->assertAdmin($actor);
+        $this->assertEnabled();
         $this->validateArguments($preset, $recordLevel, $overrides);
 
         $data = $this->buildRoleData($preset, $recordLevel, $overrides);
@@ -157,6 +268,7 @@ class SetupService
             'entityAccess' => (object) $enabled,
             'disabledEntities' => $disabled,
             'wouldReplaceExisting' => $this->findServiceUser() !== null,
+            'warnings' => self::levelWarnings($recordLevel),
             'writesNothing' => true,
             'nextStep' => 'Call mcp_setup_provision with the same arguments plus confirm: true.',
         ];
@@ -185,7 +297,45 @@ class SetupService
 
     protected function roleName(string $preset): string
     {
-        return "MCP — $preset";
+        return self::MANAGED_ROLE_PREFIX . $preset;
+    }
+
+    /**
+     * Rename — never delete — any role this module owns that the service
+     * user currently holds, so the live role stays identifiable after a
+     * re-provision has attached a new one with the same name.
+     *
+     * @return string[] The names after renaming.
+     */
+    protected function supersedeManagedRoles(User $existing): array
+    {
+        $renamed = [];
+
+        $roles = $this->entityManager
+            ->getRelation($existing, User::LINK_ROLES)
+            ->find();
+
+        foreach ($roles as $role) {
+            $name = $role->get('name');
+
+            if (!is_string($name) || !self::isManagedRoleName($name)) {
+                continue;
+            }
+
+            $newName = self::supersededRoleName($name);
+
+            if ($newName === $name) {
+                continue;
+            }
+
+            $role->set('name', $newName);
+
+            $this->entityManager->saveEntity($role);
+
+            $renamed[] = $newName;
+        }
+
+        return $renamed;
     }
 
     /**
@@ -229,6 +379,7 @@ class SetupService
         bool $replaceExisting,
     ): stdClass {
         $this->assertAdmin($actor);
+        $this->assertEnabled();
         $this->validateArguments($preset, $recordLevel, $overrides);
 
         if ($confirm !== true) {
@@ -248,6 +399,12 @@ class SetupService
             );
         }
 
+        // Read before anything is overwritten: re-provisioning sets
+        // isActive => true, and an administrator who deactivated this user
+        // did so to revoke access. That must be reported, not performed
+        // silently.
+        $wasInactive = $existing !== null && !((bool) $existing->get('isActive'));
+
         $roleData = $this->buildRoleData($preset, $recordLevel, $overrides);
 
         $role = $this->entityManager->getNewEntity(Role::ENTITY_TYPE);
@@ -264,6 +421,10 @@ class SetupService
 
         $user = $existing ?? $this->entityManager->getNewEntity(User::ENTITY_TYPE);
 
+        // Before the new role is attached, so the role the user held is not
+        // left sharing a name with the live one.
+        $supersededRoles = $existing === null ? [] : $this->supersedeManagedRoles($existing);
+
         $user->set('userName', self::SERVICE_USER_NAME);
         $user->set('lastName', 'MCP Assistant');
         $user->set('type', User::TYPE_API);
@@ -273,8 +434,10 @@ class SetupService
 
         $this->entityManager->saveEntity($user);
 
-        // apiKey is readOnly in entityDefs; this service is the only path
-        // that can mint one. It re-checks admin internally — a second gate.
+        // apiKey is readOnly in entityDefs; ApiService is the only supported
+        // way to mint one. Its own admin check is not an independent gate —
+        // under Cloudflare Access the container user can be the system user,
+        // for which isAdmin() is true. assertAdmin() above is the real gate.
         $provisioned = $this->apiService->generateNewApiKey($user->getId());
 
         $apiKey = $provisioned->get('apiKey');
@@ -293,6 +456,8 @@ class SetupService
                 'roleId' => $role->getId(),
                 'userId' => $user->getId(),
                 'replaced' => $existing !== null,
+                'reactivated' => $wasInactive,
+                'supersededRoles' => $supersededRoles,
             ]
         );
 
@@ -301,6 +466,8 @@ class SetupService
         return (object) [
             'provisioned' => true,
             'replacedExisting' => $existing !== null,
+            'reactivated' => $wasInactive,
+            'supersededRoles' => $supersededRoles,
             'preset' => $preset,
             'recordLevel' => $recordLevel,
             'roleId' => $role->getId(),
@@ -309,12 +476,12 @@ class SetupService
             'userName' => self::SERVICE_USER_NAME,
             'apiKey' => $apiKey,
             'apiKeyIsOneTime' => true,
-            'warning' =>
-                'This API key is shown once and cannot be retrieved again. ' .
-                'Store it in your MCP client config now. ' .
-                'To revoke it, deactivate or delete the user "' . self::SERVICE_USER_NAME . '" ' .
-                'in Administration → Users. To change its permissions, edit the role "' .
-                $this->roleName($preset) . '" in Administration → Roles.',
+            'warning' => self::provisionWarning(
+                $this->roleName($preset),
+                (string) $role->getId(),
+                $wasInactive
+            ),
+            'warnings' => self::levelWarnings($recordLevel),
             'clientConfig' => (object) [
                 'mcpServers' => (object) [
                     'espocrm' => (object) [

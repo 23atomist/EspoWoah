@@ -223,11 +223,14 @@ class McpService
         } catch (Throwable $e) {
             $this->log->error("MCP tool '$name' failed: " . $e->getMessage());
 
+            // The detail stays in the log. An unexpected throwable can carry
+            // SQL fragments, schema names or file paths, and this response
+            // goes to the client.
             return $this->jsonRpcResult($id, (object) [
                 'content' => [
                     (object) [
                         'type' => 'text',
-                        'text' => 'Internal error: ' . $e->getMessage(),
+                        'text' => 'Internal error. See the EspoCRM log for details.',
                     ],
                 ],
                 'isError' => true,
