@@ -15,7 +15,12 @@
             "maxBodySize": 5242880,
             "defaultMaxSize": 50,
             "maxMaxSize": 200,
-            "requireAssignedUser": false
+            "requireAssignedUser": false,
+            "deniedEntityTypes": [],
+            "deniedWriteEntityTypes": []
+        },
+        "setup": {
+            "enabled": true
         }
     }
 }

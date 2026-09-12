@@ -21,6 +21,9 @@ use Espo\Core\Utils\Log;
 use Espo\Core\Utils\Config;
 use Espo\Entities\User;
 use Espo\Modules\EspoMcp\Tools\Mcp\Auth\CloudflareAccessAuth;
+use Espo\Modules\EspoMcp\Tools\Mcp\Prompts\PromptRegistry;
+use Espo\Modules\EspoMcp\Tools\Mcp\Resources\ResourceRegistry;
+use Espo\Modules\EspoMcp\Tools\Mcp\Setup\SetupService;
 use Espo\ORM\EntityManager;
 use stdClass;
 use Throwable;
@@ -116,7 +119,9 @@ class McpService
             'tools/list' => $this->handleToolsList($id),
             'tools/call' => $this->handleToolsCall($id, $params),
             'resources/list' => $this->handleResourcesList($id),
+            'resources/read' => $this->handleResourcesRead($id, $params),
             'prompts/list' => $this->handlePromptsList($id),
+            'prompts/get' => $this->handlePromptsGet($id, $params),
             default => $this->jsonRpcError($id, -32601, "Method '$method' not found."),
         };
     }
@@ -125,6 +130,7 @@ class McpService
     {
         $user = $this->resolveUser();
         $identitySource = $this->identitySource();
+        $setupRequired = $this->createSetupService()->isSetupRequired($user);
 
         $userPayload = [
             'id' => $user->getId(),
@@ -138,12 +144,21 @@ class McpService
             'protocolVersion' => self::PROTOCOL_VERSION,
             'capabilities' => (object) [
                 'tools' => (object) ['listChanged' => false],
+                'resources' => (object) ['listChanged' => false, 'subscribe' => false],
+                'prompts' => (object) ['listChanged' => false],
             ],
             'serverInfo' => (object) [
                 'name' => self::SERVER_NAME,
                 'version' => self::SERVER_VERSION,
                 'identitySource' => $identitySource,
                 'user' => (object) $userPayload,
+                'setup' => (object) [
+                    'required' => $setupRequired,
+                    'reason' => $setupRequired
+                        ? 'admin session, no MCP service user provisioned'
+                        : null,
+                    'nextTool' => $setupRequired ? 'mcp_setup_status' : null,
+                ],
             ],
         ];
 
@@ -160,7 +175,7 @@ class McpService
         $registry = $this->injectableFactory->create(ToolRegistry::class);
 
         return $this->jsonRpcResult($id, (object) [
-            'tools' => $registry->getAll(),
+            'tools' => $registry->getAll($this->setupToolsVisible()),
         ]);
     }
 
@@ -208,11 +223,14 @@ class McpService
         } catch (Throwable $e) {
             $this->log->error("MCP tool '$name' failed: " . $e->getMessage());
 
+            // The detail stays in the log. An unexpected throwable can carry
+            // SQL fragments, schema names or file paths, and this response
+            // goes to the client.
             return $this->jsonRpcResult($id, (object) [
                 'content' => [
                     (object) [
                         'type' => 'text',
-                        'text' => 'Internal error: ' . $e->getMessage(),
+                        'text' => 'Internal error. See the EspoCRM log for details.',
                     ],
                 ],
                 'isError' => true,
@@ -222,12 +240,68 @@ class McpService
 
     private function handleResourcesList(mixed $id): Response
     {
-        return $this->jsonRpcResult($id, (object) ['resources' => []]);
+        return $this->jsonRpcResult($id, (object) [
+            'resources' => (new ResourceRegistry())->list(),
+        ]);
+    }
+
+    private function handleResourcesRead(mixed $id, ?stdClass $params): Response
+    {
+        $uri = $params->uri ?? null;
+
+        if (!is_string($uri) || $uri === '') {
+            return $this->jsonRpcError($id, -32602, "Missing 'uri'.");
+        }
+
+        $content = (new ResourceRegistry())->read($uri);
+
+        if ($content === null) {
+            return $this->jsonRpcError($id, -32602, "Unknown resource '$uri'.");
+        }
+
+        return $this->jsonRpcResult($id, (object) [
+            'contents' => [
+                (object) [
+                    'uri' => $uri,
+                    'mimeType' => 'text/markdown',
+                    'text' => $content,
+                ],
+            ],
+        ]);
     }
 
     private function handlePromptsList(mixed $id): Response
     {
-        return $this->jsonRpcResult($id, (object) ['prompts' => []]);
+        return $this->jsonRpcResult($id, (object) [
+            'prompts' => (new PromptRegistry())->list(),
+        ]);
+    }
+
+    private function handlePromptsGet(mixed $id, ?stdClass $params): Response
+    {
+        $name = $params->name ?? null;
+
+        if (!is_string($name) || $name === '') {
+            return $this->jsonRpcError($id, -32602, "Missing prompt 'name'.");
+        }
+
+        $arguments = [];
+
+        if (($params->arguments ?? null) instanceof stdClass) {
+            foreach (get_object_vars($params->arguments) as $key => $value) {
+                if (is_string($value)) {
+                    $arguments[$key] = $value;
+                }
+            }
+        }
+
+        $prompt = (new PromptRegistry())->get($name, $arguments);
+
+        if ($prompt === null) {
+            return $this->jsonRpcError($id, -32602, "Unknown prompt '$name'.");
+        }
+
+        return $this->jsonRpcResult($id, (object) $prompt);
     }
 
     private function executeTool(string $name, stdClass $args): mixed
@@ -301,6 +375,22 @@ class McpService
                 $this->argString($args, 'post'),
                 (bool) ($args->isInternal ?? false)
             ),
+            'mcp_setup_status' => $this->createSetupService()
+                ->status($this->resolveUser()),
+            'mcp_setup_preview' => $this->createSetupService()->preview(
+                $this->resolveUser(),
+                $this->argString($args, 'preset'),
+                $this->argString($args, 'recordLevel'),
+                $this->argOverrides($args)
+            ),
+            'mcp_setup_provision' => $this->createSetupService()->provision(
+                $this->resolveUser(),
+                $this->argString($args, 'preset'),
+                $this->argString($args, 'recordLevel'),
+                $this->argOverrides($args),
+                ($args->confirm ?? false) === true,
+                ($args->replaceExisting ?? false) === true
+            ),
             default => throw new BadRequest("Unknown tool '$name'."),
         };
     }
@@ -326,6 +416,24 @@ class McpService
         return $this->injectableFactory->createWith(RecordExecutor::class, [
             'user' => $user,
         ]);
+    }
+
+    private function createSetupService(): SetupService
+    {
+        return $this->injectableFactory->create(SetupService::class);
+    }
+
+    /**
+     * Setup tools are listed only for admin sessions. This controls
+     * visibility only — authorisation is enforced in SetupService.
+     */
+    private function setupToolsVisible(): bool
+    {
+        if (!$this->resolveUser()->isAdmin()) {
+            return false;
+        }
+
+        return $this->createSetupService()->isEnabled();
     }
 
     /**
@@ -433,6 +541,34 @@ class McpService
         }
 
         return $value;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function argOverrides(stdClass $args): array
+    {
+        $value = $args->overrides ?? null;
+
+        if ($value === null) {
+            return [];
+        }
+
+        if (!($value instanceof stdClass)) {
+            throw new BadRequest("Argument 'overrides' must be an object.");
+        }
+
+        $result = [];
+
+        foreach (get_object_vars($value) as $entityType => $shape) {
+            if (!is_string($shape)) {
+                throw new BadRequest("Override for '$entityType' must be a string.");
+            }
+
+            $result[$entityType] = $shape;
+        }
+
+        return $result;
     }
 
     private function optString(stdClass $args, string $name): ?string
