@@ -1,5 +1,11 @@
 # EspoMcp — MCP inside EspoCRM
 
+```
+ /\_/\
+( o.o )   an assistant that lives in your CRM,
+ > ^ <    and only reaches what you let it
+```
+
 A [Model Context Protocol](https://modelcontextprotocol.io) server implemented as an **EspoCRM module**. It exposes a single endpoint on your existing CRM URL:
 
 ```
@@ -158,6 +164,103 @@ Works out of the box. Point an MCP client at the URL with Basic auth:
 }
 ```
 
+## First-run setup (self-provisioning)
+
+The module configures its own credentials. Connect once as an administrator, answer a couple
+of questions, approve the permissions you are shown — and you are left with a scoped API key.
+The admin credential is only needed to bootstrap, and is never what the assistant keeps using.
+
+### 1. Connect as an administrator
+
+```bash
+claude mcp add -t http espocrm https://crm.yourdomain.com/api/v1/mcp \
+  -H "Authorization: Basic $(printf 'admin:PASSWORD' | base64)"
+```
+
+`claude mcp add` defaults to `-s local`, which scopes the server to the current directory.
+Use `-s project` to write `.mcp.json` into the repo, or `-s user` for every project. Any MCP
+client works — the equivalent config block is under
+[Standard Espo auth](#standard-espo-auth-no-cloudflare).
+
+### 2. Ask the assistant to set it up
+
+You do not have to explain the flow. `initialize` advertises that setup is pending, so the
+assistant notices on its own:
+
+```json
+"setup": {
+  "required": true,
+  "reason": "admin session, no MCP service user provisioned",
+  "nextTool": "mcp_setup_status"
+}
+```
+
+Say **"set up the MCP"**, and three things happen in order:
+
+1. **`mcp_setup_status`** — reports the available presets and record levels, and which entity
+   types are denied outright.
+2. **`mcp_setup_preview`** — the assistant asks what you want it doing and how much access you
+   are willing to risk, then calls this. **It writes nothing.** It returns the exact
+   entity-by-permission matrix that *would* be created, so you approve real permissions rather
+   than a preset name.
+3. **`mcp_setup_provision`** — only after you approve, and only with `confirm: true`.
+
+### 3. Choose a preset and a record level
+
+| Preset | What it can write |
+|---|---|
+| `readonly-analyst` | nothing — read and stream only |
+| `sales-assistant` | Account, Contact, Lead, Opportunity, Task, Meeting, Call |
+| `support-agent` | Case, Contact, Account, Knowledge Base, Task, Meeting, Call |
+| `full-operator` | every entity it is allowed to reach |
+
+Then a **record level** — how far visibility reaches:
+
+- `own` — only records assigned to the service user
+- `team` — records belonging to its teams
+- `all` — everything
+
+And optional per-entity overrides: `{"Document": "none", "Task": "readwrite"}`, using the
+shapes `none`, `read`, `readwrite`, `full`.
+
+Every preset disables export, mass-update and data-privacy permissions, `full-operator`
+included. Delete is off everywhere except `full-operator`. Those are not preferences — they
+are the difference between an assistant that edits records and one that can drain or
+mass-mutate the database.
+
+### 4. Swap the admin credential for the key
+
+`mcp_setup_provision` returns the API key **once**, with a ready-to-paste client config.
+Replace the Basic auth header and remove the admin password:
+
+```bash
+claude mcp remove espocrm
+claude mcp add -t http espocrm https://crm.yourdomain.com/api/v1/mcp \
+  -H "X-Api-Key: <the key you were just given>"
+```
+
+Reconnect and `mcp_whoami` reports `mcp-assistant` instead of your admin user. The setup
+tools disappear from `tools/list`, because setup is no longer pending.
+
+```
+ /\_/\
+( ^.^ )   scoped, revocable, and not your admin password
+ > ^ <
+```
+
+### Changing your mind
+
+- **Tighten or loosen permissions** — edit the role named in the provisioning response
+  (it includes the role id) in Administration → Roles. Changes apply immediately.
+- **Re-provision with a different preset** — call `mcp_setup_provision` again with
+  `replaceExisting: true`. The previous role is renamed `(superseded)` rather than deleted,
+  and a new key is issued.
+- **Revoke** — deactivate or delete the `mcp-assistant` user in Administration → Users. The
+  key stops authenticating immediately.
+
+> If `mcp.setup.enabled` is `false`, the setup tools are hidden *and* refused, even for an
+> administrator who calls them by name.
+
 ## MCP client configuration (Cloudflare Access flow)
 
 MCP clients that support HTTP transport with browser-based OAuth/SSO sign-in can use the CF Access session (cookie or token) directly. For CLI clients (e.g. Claude Code with `http` transport), the simplest is a **service token header** on a Cloudflare Access service-token application covering `/api/v1/mcp`:
@@ -235,6 +338,15 @@ pull in instead of the assistant guessing at EspoCRM's conventions:
 ```bash
 rm -rf custom/Espo/Modules/EspoMcp
 php command.php rebuild
+```
+
+Remember to deactivate or delete the `mcp-assistant` user too — removing the module does not
+revoke a key it already issued.
+
+```
+ /\_/\
+( -.- )   ...fine. i'll see myself out
+ > ^ <
 ```
 
 ## License
