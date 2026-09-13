@@ -1,5 +1,11 @@
 # EspoMcp — Self-Provisioning Bootstrap & Public Release
 
+> **Design record.** This is the design as approved before implementation. Where the built
+> code differs, the code and `CHANGELOG.md` are authoritative — notably, OAuth remained
+> deferred (see `ROADMAP.md`) and several limitations found in review are documented in
+> `SECURITY.md`.
+
+
 **Date:** 2026-09-12
 **Status:** Approved design, pending implementation plan
 **Supersedes:** positioning in `README.md` as of `db6e0f4`

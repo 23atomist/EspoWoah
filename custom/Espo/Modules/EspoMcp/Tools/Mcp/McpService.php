@@ -47,7 +47,7 @@ class McpService
 
     private const string SERVER_NAME = 'espocrm-mcp';
 
-    private const string SERVER_VERSION = '1.0.0';
+    private const string SERVER_VERSION = '1.1.0';
 
     public function __construct(
         private InjectableFactory $injectableFactory,
@@ -589,15 +589,20 @@ class McpService
             return null;
         }
 
-        if (is_array($value)) {
-            return $value;
+        if (!is_array($value) && !($value instanceof stdClass)) {
+            throw new BadRequest("Argument '$name' must be an array.");
         }
 
-        if ($value instanceof stdClass) {
-            return Json::decode(Json::encode($value), true);
+        // Round-trip so that nested stdClass values (JSON-RPC bodies are
+        // decoded with objects, not assoc arrays) become nested arrays.
+        // Consumers such as where-filter validation expect arrays throughout.
+        $decoded = Json::decode(Json::encode($value), true);
+
+        if (!is_array($decoded)) {
+            throw new BadRequest("Argument '$name' must be an array.");
         }
 
-        throw new BadRequest("Argument '$name' must be an array.");
+        return $decoded;
     }
 
     private function optInt(stdClass $args, string $name): ?int

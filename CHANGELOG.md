@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 Format follows Keep a Changelog; versioning follows SemVer.
 
-## [Unreleased]
+## [1.1.0] - 2026-09-12
 
 ### Security
 
@@ -38,6 +38,14 @@ Format follows Keep a Changelog; versioning follows SemVer.
 - `LICENSE` (MIT — previously claimed in the README with no file present).
 
 ### Fixed
+
+- **Record operations failed outright on EspoCRM 9.** `Espo\Core\Record\Service`
+  declares `read`, `create`, `update` and `delete` with a *required* params object
+  (`ReadParams`, `CreateParams`, `UpdateParams`, `DeleteParams`). The module called
+  them without one, so `get_record`, `create_record`, `update_record` and
+  `delete_record` raised an `ArgumentCountError` on every call. Each now passes
+  `::create()`. `find`, `findLinked`, `link`, `unlink` and `getEntity` were checked
+  against the same core signatures and need no change.
 
 - `mcp.setup.enabled: false` now disables the setup flow rather than only hiding
   the three tools from `tools/list`. `mcp_setup_status`, `mcp_setup_preview` and
