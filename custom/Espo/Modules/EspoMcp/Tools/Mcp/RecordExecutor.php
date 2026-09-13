@@ -17,9 +17,13 @@ use Espo\Core\AclManager;
 use Espo\Core\Exceptions\BadRequest;
 use Espo\Core\Exceptions\Forbidden;
 use Espo\Core\Exceptions\NotFound;
+use Espo\Core\Record\CreateParams;
+use Espo\Core\Record\DeleteParams;
+use Espo\Core\Record\ReadParams;
 use Espo\Core\Record\Service as RecordService;
 use Espo\Core\Record\ServiceContainer as RecordServiceContainer;
 use Espo\Core\Record\ServiceFactory as RecordServiceFactory;
+use Espo\Core\Record\UpdateParams;
 use Espo\Core\Select\SearchParams;
 use Espo\Core\Utils\Metadata;
 use Espo\Core\Utils\Config;
@@ -220,7 +224,7 @@ class RecordExecutor
     {
         $service = $this->getServiceForUser($entityType);
 
-        $result = $service->read($id);
+        $result = $service->read($id, ReadParams::create());
 
         return $result->getValueMap();
     }
@@ -229,7 +233,7 @@ class RecordExecutor
     {
         $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
-        $result = $service->create($data);
+        $result = $service->create($data, CreateParams::create());
 
         return $result->getValueMap();
     }
@@ -238,7 +242,7 @@ class RecordExecutor
     {
         $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
-        $result = $service->update($id, $data);
+        $result = $service->update($id, $data, UpdateParams::create());
 
         return $result->getValueMap();
     }
@@ -247,7 +251,7 @@ class RecordExecutor
     {
         $service = $this->getServiceForUser($entityType, EntityAccessPolicy::OPERATION_WRITE);
 
-        $service->delete($id);
+        $service->delete($id, DeleteParams::create());
     }
 
     public function search(
