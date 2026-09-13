@@ -1,5 +1,13 @@
 # EspoMcp Bootstrap & Hardening Implementation Plan
 
+> **Historical record.** This plan was written before implementation and was amended
+> during execution — several code blocks below diverge from what actually shipped, because
+> review findings changed them (notably the ACL clamping fixture, the Composer platform pin,
+> and object-shaped config handling). Read it for the reasoning and sequencing, not as an
+> API reference. The code in `custom/` is the source of truth; `CHANGELOG.md` records what
+> changed and why.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close an admin-context privilege-escalation path in the generic record tools, and add an admin-gated bootstrap that provisions a role-scoped EspoCRM API user for the assistant after presenting the exact permissions for approval.

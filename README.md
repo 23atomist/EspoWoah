@@ -70,7 +70,7 @@ All record operations go through EspoCRM's own record services: validation, fiel
 
 ## Requirements
 
-- EspoCRM ≥ 8.4 (built against 10.0.7)
+- EspoCRM ≥ 8.4 (developed against 10.0.7; v1.1.0 verified running on EspoCRM 9 / PHP 8.4.22)
 - PHP ≥ 8.3 with OpenSSL (part of EspoCRM's own requirements)
 - Optional: Cloudflare Access on the CRM hostname
 
