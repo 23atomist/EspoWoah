@@ -35,6 +35,7 @@ use Espo\Core\Utils\Config;
 use Espo\Entities\User;
 use Espo\Modules\EspoMcp\Tools\Mcp\Auth\CloudflareAccessAuth;
 use Espo\Modules\EspoMcp\Tools\Mcp\Prompts\PromptRegistry;
+use Espo\Modules\EspoMcp\Tools\Mcp\Protocol\ProtocolVersion;
 use Espo\Modules\EspoMcp\Tools\Mcp\Resources\ResourceRegistry;
 use Espo\Modules\EspoMcp\Tools\Mcp\Setup\SetupService;
 use Espo\ORM\EntityManager;
@@ -56,8 +57,6 @@ use Throwable;
  */
 class McpService
 {
-    private const string PROTOCOL_VERSION = '2025-06-18';
-
     private const string SERVER_NAME = 'espocrm-mcp';
 
     private const string SERVER_VERSION = '1.2.0';
@@ -73,10 +72,21 @@ class McpService
 
     public function processGet(Request $request): Response
     {
+        // Streamable HTTP uses GET to open a server-initiated SSE stream.
+        // This server is stateless and never opens one, so the spec requires
+        // 405 here rather than an unrelated body. Any other Accept gets the
+        // discovery document.
+        if (ProtocolVersion::wantsEventStream($request->getHeader('Accept'))) {
+            return ResponseComposer::empty()
+                ->setStatus(405)
+                ->setHeader('Allow', 'POST');
+        }
+
         return ResponseComposer::json((object) [
             'name' => self::SERVER_NAME,
             'version' => self::SERVER_VERSION,
-            'protocolVersion' => self::PROTOCOL_VERSION,
+            'protocolVersion' => ProtocolVersion::LATEST,
+            'supportedProtocolVersions' => ProtocolVersion::supported(),
             'endpoint' => 'POST /api/v1/mcp',
             'transport' => 'streamable-http (stateless)',
             'identitySource' => $this->cfAccessAuth->isEnabled() ? 'cloudflare-access | espo-auth' : 'espo-auth',
@@ -90,6 +100,25 @@ class McpService
 
     public function processPost(Request $request, Response $response): Response
     {
+        // The client must send MCP-Protocol-Version on every request after
+        // initialize. Absent is allowed (the spec says assume 2025-03-26);
+        // present but unservable must be refused.
+        $requestedVersion = $request->getHeader('MCP-Protocol-Version');
+
+        if (!ProtocolVersion::headerIsAcceptable($requestedVersion)) {
+            $supported = implode(', ', ProtocolVersion::supported());
+
+            return ResponseComposer::json((object) [
+                'jsonrpc' => '2.0',
+                'id' => null,
+                'error' => (object) [
+                    'code' => -32600,
+                    'message' => "Unsupported MCP-Protocol-Version '$requestedVersion'. " .
+                        "This server supports: $supported.",
+                ],
+            ])->setStatus(400);
+        }
+
         $body = $request->getBodyContents();
 
         if ($body === null || $body === '') {
@@ -127,7 +156,7 @@ class McpService
         }
 
         return match ($method) {
-            'initialize' => $this->handleInitialize($id),
+            'initialize' => $this->handleInitialize($id, $params),
             'ping' => $this->handlePing($id),
             'tools/list' => $this->handleToolsList($id),
             'tools/call' => $this->handleToolsCall($id, $params),
@@ -139,7 +168,7 @@ class McpService
         };
     }
 
-    private function handleInitialize(mixed $id): Response
+    private function handleInitialize(mixed $id, ?stdClass $params): Response
     {
         $user = $this->resolveUser();
         $identitySource = $this->identitySource();
@@ -153,8 +182,13 @@ class McpService
             'teams' => $user->get('teamsIds') ?? [],
         ];
 
+        // Echo the client's requested revision when this server can serve it;
+        // otherwise answer with our latest and let the client decide whether
+        // to continue.
+        $negotiated = ProtocolVersion::negotiate($params->protocolVersion ?? null);
+
         $result = (object) [
-            'protocolVersion' => self::PROTOCOL_VERSION,
+            'protocolVersion' => $negotiated,
             'capabilities' => (object) [
                 'tools' => (object) ['listChanged' => false],
                 'resources' => (object) ['listChanged' => false, 'subscribe' => false],

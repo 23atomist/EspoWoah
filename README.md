@@ -68,6 +68,42 @@ first-run setup is still pending (no MCP service user exists yet). They are hidd
 
 All record operations go through EspoCRM's own record services: validation, field filtering, duplicate detection, hooks, stream events and **ACL checks as the authenticated user** behave exactly as in the web UI.
 
+## Protocol and transport
+
+| | |
+|---|---|
+| Transport | Streamable HTTP, **stateless** |
+| Protocol revisions served | `2025-06-18`, `2025-03-26` |
+| Session state | none |
+
+**Why there is no long-lived connection.** The original MCP HTTP transport
+(`2024-11-05`, HTTP+SSE) required the client to hold open a `GET /sse` stream for the
+server to push messages down. That is a poor fit for PHP, where every request is its own
+process and an open stream pins a worker for the life of the session.
+
+Streamable HTTP replaced it, and explicitly permits answering a POSTed request with a
+single JSON object instead of an SSE stream:
+
+> the server **MUST** either return `Content-Type: text/event-stream`, to initiate an SSE
+> stream, or `application/json`, to return one JSON object.
+
+That single-response mode is the only one implemented here. Every call is one POST in, one
+JSON response out, connection closed — an ordinary EspoCRM API request that starts,
+resolves the user, runs one tool and ends. Notifications get `202 Accepted` with no body.
+No `Mcp-Session-Id`, nothing held open, nothing to reap.
+
+`2024-11-05` is deliberately **not** offered: it defines only the HTTP+SSE transport, so a
+client negotiating it would then wait on a stream this server will never open. A client
+requesting it is answered with `2025-06-18` and decides for itself whether to continue.
+`GET` on the MCP endpoint returns `405 Method Not Allowed` when an SSE stream is
+requested, and the discovery document otherwise.
+
+**What this costs.** There is no server→client channel, so there is no elicitation, no
+server-pushed notifications, no progress reporting, and no resource subscriptions
+(`subscribe: false`). That is why first-run setup is not a server-run interview: the
+server exposes `status`/`preview`/`provision` as tools, and the client's model does the
+asking.
+
 ## Requirements
 
 - EspoCRM ≥ 8.4 (developed against 10.0.7; v1.1.0 verified running on EspoCRM 9 / PHP 8.4.22)
