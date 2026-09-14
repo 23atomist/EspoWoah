@@ -351,4 +351,12 @@ revoke a key it already issued.
 
 ## License
 
-MIT
+**GNU Affero General Public License v3.0 or later** (AGPL-3.0-or-later).
+
+EspoCRM is licensed under the AGPLv3. This module is a derivative work of it — it
+extends EspoCRM's classes and runs inside its process — so it carries the same
+licence, as the AGPL requires of the combined work. See [LICENSE](LICENSE).
+
+> Releases up to and including v1.1.0 were published under the MIT licence. Anyone
+> who obtained those retains the rights they were granted at the time; everything
+> from v1.2.0 onward is AGPL-3.0-or-later.
