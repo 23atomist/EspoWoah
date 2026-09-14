@@ -1,7 +1,7 @@
 {
     "name": "espomcp/espomcp",
     "description": "MCP server as an EspoCRM module",
-    "license": "MIT",
+    "license": "AGPL-3.0-or-later",
     "type": "project",
     "require": {
         "php": ">=8.3"

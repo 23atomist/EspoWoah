@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 Format follows Keep a Changelog; versioning follows SemVer.
 
+## [1.2.0] - 2026-09-13
+
+### Changed
+
+- **Relicensed from MIT to AGPL-3.0-or-later**, at the request of the EspoCRM
+  developers. EspoCRM is licensed under the AGPLv3, and this module is a
+  derivative work of it — it extends EspoCRM's classes and runs inside its
+  process — so the combined work must be offered under compatible terms. MIT
+  alone understated the obligations that actually attach to it.
+
+  Every source file now carries the AGPL notice, `LICENSE` holds the full
+  licence text, and `composer.json` declares `AGPL-3.0-or-later`.
+
+  Releases up to and including v1.1.0 were published under MIT. Those grants are
+  not revoked — anyone who obtained that code keeps the rights they were given.
+  Everything from v1.2.0 onward is AGPL-3.0-or-later.
+
 ## [1.1.0] - 2026-09-12
 
 ### Security
