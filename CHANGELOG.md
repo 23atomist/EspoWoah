@@ -5,7 +5,32 @@ Format follows Keep a Changelog; versioning follows SemVer.
 
 ## [1.2.0] - 2026-09-13
 
+### Fixed
+
+- **`GET` on the MCP endpoint violated the Streamable HTTP spec.** The transport
+  requires a server to answer `GET` with either `Content-Type: text/event-stream`
+  or `405 Method Not Allowed`; this server returned `200` with a discovery
+  document, so a conformant client asking for an SSE stream received something
+  it had not requested. `GET` now returns `405` with `Allow: POST` when an SSE
+  stream is asked for, and the discovery document otherwise.
+
+- **`MCP-Protocol-Version` was ignored.** Clients must send it on every request
+  after initialization, and a server must refuse an unsupported value with
+  `400 Bad Request`. It is now validated. An absent header is still accepted, per
+  the spec's rule to assume `2025-03-26` rather than reject.
+
+- **`initialize` did not negotiate.** The server reported `2025-06-18` regardless
+  of what the client requested, which could read as support for revisions it
+  cannot serve. It now echoes the client's requested revision when it can serve
+  it, and answers with its own latest otherwise.
+
 ### Changed
+
+- Protocol revisions served are now stated explicitly: `2025-06-18` and
+  `2025-03-26`, both Streamable HTTP. `2024-11-05` is deliberately not offered —
+  it defines only the HTTP+SSE transport, and a client negotiating it would wait
+  on a stream this stateless server never opens. The `GET` discovery document
+  reports the full list in `supportedProtocolVersions`.
 
 - **Relicensed from MIT to AGPL-3.0-or-later**, at the request of the EspoCRM
   developers. EspoCRM is licensed under the AGPLv3, and this module is a
